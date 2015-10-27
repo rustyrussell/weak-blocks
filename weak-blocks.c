@@ -1,4 +1,5 @@
 #include <ccan/structeq/structeq.h>
+#include <ccan/htable/htable_type.h>
 #include <ccan/tal/tal.h>
 #include <ccan/tal/grab_file/grab_file.h>
 #include <ccan/err/err.h>
@@ -8,11 +9,36 @@
 #define MIN_BLOCK 352720
 #define MAX_BLOCK 352820
 
+struct txinfo {
+	struct corpus_txid txid;
+};
+
+/* Hash txids */
+static const struct corpus_txid *keyof_txinfo(const struct txinfo *t)
+{
+	return &t->txid;
+}
+
+static size_t hash_txid(const struct corpus_txid *txid)
+{
+	size_t ret;
+
+	memcpy(&ret, txid, sizeof(ret));
+	return ret;
+}
+
+static bool txid_eq(const struct txinfo *t, const struct corpus_txid *txid)
+{
+	return structeq(&t->txid, txid);
+}
+
+HTABLE_DEFINE_TYPE(struct txinfo, keyof_txinfo, hash_txid, txid_eq, txmap);
+
 struct block {
 	struct peer *owner;
 	unsigned int height;
 	/* All the non-coinbase txids. */
-	struct corpus_txid *txids;
+	struct txmap txs;
 };
 
 /* We keep weak blocks for last few blocks (sufficient here). */
@@ -27,39 +53,30 @@ static struct block *new_block(const tal_t *ctx, struct peer *owner,
 	struct block *b = tal(ctx, struct block);
 	b->owner = owner;
 	b->height = height;
-	b->txids = tal_arr(b, struct corpus_txid, 0);
+	txmap_init(&b->txs);
 	return b;
 }
 
-/* Inefficient, but simple. */
-static int find_in_block(const struct block *block,
-			 const struct corpus_txid *txid)
+static bool find_in_block(const struct block *block,
+			  const struct corpus_txid *txid)
 {
-	size_t i;
-
-	for (i = 0; i < tal_count(block->txids); i++)
-		if (structeq(&block->txids[i], txid))
-			return i;
-	return -1;
+	return txmap_get(&block->txs, txid) != NULL;
 }
 
 static void add_to_block(struct block *b, const struct corpus_txid *txid)
 {
-	size_t n = tal_count(b->txids);
-	assert(find_in_block(b, txid) == -1);
+	struct txinfo *txinfo = tal(b, struct txinfo);
 
-	tal_resize(&b->txids, n+1);
-	b->txids[n] = *txid;
+	assert(!find_in_block(b, txid));
+
+	txinfo->txid = *txid;
+	txmap_add(&b->txs, txinfo);
 }
 
 static void remove_from_block(struct block *b, const struct corpus_txid *txid)
 {
-	int n = find_in_block(b, txid);
-	if (n == -1)
+	if (!txmap_delkey(&b->txs, txid))
 		errx(1, "Bad txid in block?");
-	memmove(b->txids + n, b->txids + n + 1,
-		(tal_count(b->txids) - n - 1) * sizeof(*b->txids));
-	tal_resize(&b->txids, tal_count(b->txids)-1);
 }
 
 struct peer {
@@ -123,10 +140,10 @@ static void next_block(struct peer *p, size_t blocknum)
 			print_tx(p, "removing", &p->cur->txid);
 			break;
 		case MEMPOOL_ONLY:
-			assert(find_in_block(p->mempool, &p->cur->txid) >= 0);
+			assert(find_in_block(p->mempool, &p->cur->txid));
 			break;
 		case UNKNOWN:
-			assert(find_in_block(p->mempool, &p->cur->txid) < 0);
+			assert(!find_in_block(p->mempool, &p->cur->txid));
 			break;
 		}
 		p->cur++;
@@ -182,11 +199,15 @@ static void generate_weak(struct weak_blocks *weak, struct peer *peer)
 {
 	/* FIXME: limit by size and fee here. */
 	size_t i, min = 0;
+	struct txmap_iter it;
+	struct txinfo *t;
 	struct block *b = new_block(weak, peer, peer->mempool->height);
 
-	b->txids = tal_dup_arr(b, struct corpus_txid, peer->mempool->txids,
-			       tal_count(peer->mempool->txids), 0);
-
+	for (t = txmap_first(&peer->mempool->txs, &it);
+	     t;
+	     t = txmap_next(&peer->mempool->txs, &it)) {
+		txmap_add(&b->txs, tal_dup(b, struct txinfo, t));
+	}
 	for (i = 0; i < NUM_WEAK; i++) {
 		if (!weak->b[i]) {
 			weak->b[i] = b;
@@ -223,10 +244,10 @@ static struct block *read_block_contents(struct peer *p, size_t block_height)
 			add_to_block(b, &p->cur->txid);
 			break;
 		case MEMPOOL_ONLY:
-			assert(find_in_block(p->mempool, &p->cur->txid) >= 0);
+			assert(find_in_block(p->mempool, &p->cur->txid));
 			break;
 		case UNKNOWN:
-			assert(find_in_block(p->mempool, &p->cur->txid) < 0);
+			assert(!find_in_block(p->mempool, &p->cur->txid));
 			add_to_block(b, &p->cur->txid);
 			break;
 		}
@@ -236,19 +257,20 @@ static struct block *read_block_contents(struct peer *p, size_t block_height)
 }
 
 /* FIXME: Implement */
-static size_t txsize(const struct corpus_txid *txid)
+static size_t txsize(const struct txinfo *t)
 {
 	return 254;
 }
 
 static void encode_raw(struct peer *p, const struct block *b)
 {
-	size_t i, n = tal_count(b->txids);
+	struct txmap_iter it;
+	struct txinfo *t;
 
 	p->raw_blocks_sent++;
-	for (i = 0; i < n; i++) {
+	for (t = txmap_first(&b->txs, &it); t; t = txmap_next(&b->txs, &it)) {
 		p->txs_sent++;
-		p->bytes_sent += txsize(&b->txids[i]);
+		p->bytes_sent += txsize(t);
 	}
 }
 
@@ -267,8 +289,9 @@ static const struct block *find_weak(const struct weak_blocks *weak,
 static void encode_against_weak(struct peer *p, const struct block *b,
 				const struct weak_blocks *weak)
 {
-	size_t i, n = tal_count(b->txids);
 	const struct block *base = find_weak(weak, b->height);
+	struct txmap_iter it;
+	struct txinfo *t;
 
 	if (!base) {
 		encode_raw(p, b);
@@ -278,14 +301,15 @@ static void encode_against_weak(struct peer *p, const struct block *b,
 	p->ref_blocks_sent++;
 	/* Assume we refer to the previous block. */
 	p->bytes_sent += sizeof(struct corpus_txid);
-	for (i = 0; i < n; i++) {
-		if (find_in_block(base, &b->txids[i]) >= 0) {
+
+	for (t = txmap_first(&b->txs, &it); t; t = txmap_next(&b->txs, &it)) {
+		if (find_in_block(base, &t->txid)) {
 			/* 16 bits to show position. */
 			p->bytes_sent += 2;
 			p->txs_referred++;
 		} else {
 			p->txs_sent++;
-			p->bytes_sent += txsize(&b->txids[i]);
+			p->bytes_sent += txsize(t);
 		}
 	}
 }
