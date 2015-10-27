@@ -1,17 +1,45 @@
+#include <ccan/asort/asort.h>
 #include <ccan/structeq/structeq.h>
 #include <ccan/htable/htable_type.h>
 #include <ccan/tal/tal.h>
+#include <ccan/tal/str/str.h>
 #include <ccan/tal/grab_file/grab_file.h>
+#include <ccan/rbuf/rbuf.h>
 #include <ccan/err/err.h>
+#include <ccan/str/hex/hex.h>
 #include <assert.h>
 #include "../bitcoin-corpus/bitcoin-corpus.h"
 
 #define MIN_BLOCK 352720
 #define MAX_BLOCK 352820
 
+/* 80 bytes header, 600 bytes for coinbase */
+#define BLOCK_OVERHEAD 680
+#define BLOCKSIZE 1000000
+
 struct txinfo {
 	struct corpus_txid txid;
+	bool coinbase;
+	unsigned int fee;
+	unsigned int len;
 };
+
+/* Map of all the txs. */
+static struct txmap *all_txs;
+
+/* If we don't know about tx, use approximations. */
+static struct txinfo *unknown_txinfo(const tal_t *ctx,
+				     const struct corpus_txid *txid)
+{
+	struct txinfo *txinfo = tal(ctx, struct txinfo);
+
+	txinfo->txid = *txid;
+	txinfo->coinbase = false;
+	txinfo->fee = 10000;
+	txinfo->len = 254;
+
+	return txinfo;
+}
 
 /* Hash txids */
 static const struct corpus_txid *keyof_txinfo(const struct txinfo *t)
@@ -33,6 +61,16 @@ static bool txid_eq(const struct txinfo *t, const struct corpus_txid *txid)
 }
 
 HTABLE_DEFINE_TYPE(struct txinfo, keyof_txinfo, hash_txid, txid_eq, txmap);
+
+static size_t txsize(const struct txinfo *t)
+{
+	return t->len;
+}
+
+static double txfee_per_byte(const struct txinfo *t)
+{
+	return (double)t->fee / t->len;
+}
 
 struct block {
 	struct peer *owner;
@@ -65,11 +103,13 @@ static bool find_in_block(const struct block *block,
 
 static void add_to_block(struct block *b, const struct corpus_txid *txid)
 {
-	struct txinfo *txinfo = tal(b, struct txinfo);
+	struct txinfo *txinfo;
 
 	assert(!find_in_block(b, txid));
 
-	txinfo->txid = *txid;
+	txinfo = txmap_get(all_txs, txid);
+	if (!txinfo)
+		txinfo = unknown_txinfo(b, txid);
 	txmap_add(&b->txs, txinfo);
 }
 
@@ -195,19 +235,49 @@ static void forward_to_block(struct peer *p, size_t blocknum)
 	errx(1, "No block number %zu for peer %s", blocknum, p->name);
 }
 
+static int cmp_feerate(struct txinfo *const *a, struct txinfo *const *b,
+		       void *unused)
+{
+	double fratea = txfee_per_byte(*a), frateb = txfee_per_byte(*b);
+
+	if (fratea > frateb)
+		return 1;
+	else if (frateb > fratea)
+		return -1;
+	return 0;
+}
+
 static void generate_weak(struct weak_blocks *weak, struct peer *peer)
 {
-	/* FIXME: limit by size and fee here. */
-	size_t i, min = 0;
+	struct txinfo **sorted;
+	size_t i, total, min = 0;
 	struct txmap_iter it;
 	struct txinfo *t;
-	struct block *b = new_block(weak, peer, peer->mempool->height);
+	struct block *b;
 
-	for (t = txmap_first(&peer->mempool->txs, &it);
+	sorted = tal_arr(weak, struct txinfo *, peer->mempool->txs.raw.elems);
+	for (i = 0, t = txmap_first(&peer->mempool->txs, &it);
 	     t;
 	     t = txmap_next(&peer->mempool->txs, &it)) {
-		txmap_add(&b->txs, tal_dup(b, struct txinfo, t));
+		sorted[i++] = t;
 	}
+	assert(i == peer->mempool->txs.raw.elems);
+
+	asort(sorted, i, cmp_feerate, NULL);
+
+	total = 0;
+	b = new_block(weak, peer, peer->mempool->height);
+	/* We do first fill for blocks. */
+	for (i = 0; i < peer->mempool->txs.raw.elems; i++) {
+		if (total + sorted[i]->len > BLOCKSIZE - BLOCK_OVERHEAD)
+			break;
+		txmap_add(&b->txs, sorted[i]);
+		total += sorted[i]->len;
+	}
+	printf("Block size %u is %zu (%zu/%zu)\n", b->height, total,
+	       i, peer->mempool->txs.raw.elems);
+
+	/* Now fill it in a weak slot. */
 	for (i = 0; i < NUM_WEAK; i++) {
 		if (!weak->b[i]) {
 			weak->b[i] = b;
@@ -254,12 +324,6 @@ static struct block *read_block_contents(struct peer *p, size_t block_height)
 		p->cur++;
 	}
 	errx(1, "%s: ran out of input", p->name);
-}
-
-/* FIXME: Implement */
-static size_t txsize(const struct txinfo *t)
-{
-	return 254;
 }
 
 static void encode_raw(struct peer *p, const struct block *b)
@@ -352,23 +416,54 @@ static void process_events(struct peer *p, unsigned int time,
 	errx(1, "%s: ran out of input", p->name);
 }
 
+static void load_txmap(const char *csvfile)
+{
+	struct rbuf in;
+	char *line;
+
+	all_txs = tal(NULL, struct txmap);
+	txmap_init(all_txs);
+	if (!rbuf_open(&in, csvfile, NULL, 0))
+		err(1, "Failed opening %s", csvfile);
+
+	/* 352720,0,433a604e24c948f3eaa2af815c168b65c3f4c3e746c7b4129779cbe9a45c5d0a,102,-2516496498 */
+	while ((line = rbuf_read_str(&in, '\n', realloc)) != NULL) {
+		struct txinfo *t = tal(all_txs, struct txinfo);
+		char **parts = tal_strsplit(NULL, line, ",", STR_EMPTY_OK);
+		if (tal_count(parts) != 6)
+			errx(1, "Invalid line in %s: '%s'", csvfile, line);
+		t->coinbase = streq(parts[1], "0");
+		if (!hex_decode(parts[2], strlen(parts[2]), t->txid.id,
+				sizeof(t->txid.id)))
+			errx(1, "Invalid txid in %s: '%s'", csvfile, parts[2]);
+		t->len = atoi(parts[3]);
+		if (!t->len)
+			errx(1, "Invalid len in %s: '%s'", csvfile, parts[3]);
+		t->fee = atoi(parts[4]);
+		txmap_add(all_txs, t);
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	size_t i, num_peers;
 	unsigned int time, start_time;
-	struct weak_blocks *weak = talz(NULL, struct weak_blocks);
+	struct weak_blocks *weak;
 	struct peer *peers;
 
-	if (argc < 3)
-		errx(1, "Usage: %s <peer1> <peer2>...", argv[0]);
+	if (argc < 4)
+		errx(1, "Usage: %s <txids> <peer1> <peer2>...", argv[0]);
 
-	num_peers = argc - 1;
+	load_txmap(argv[1]);
+	weak = talz(all_txs, struct weak_blocks);
+	
+	num_peers = argc - 2;
 	peers = tal_arr(weak, struct peer, num_peers);
 	for (i = 0; i < num_peers; i++) {
-		peers[i].name = argv[i+1];
-		peers[i].start = peers[i].cur = grab_file(peers, argv[i+1]);
+		peers[i].name = argv[i+2];
+		peers[i].start = peers[i].cur = grab_file(peers, peers[i].name);
 		if (!peers[i].start)
-			err(1, "Grabbing %s", argv[i+1]);
+			err(1, "Grabbing %s", peers[i].name);
 		peers[i].end = peers[i].start
 			+ tal_count(peers[i].start) / sizeof(*peers[i].start);
 		peers[i].mempool = new_block(peers, &peers[i], MIN_BLOCK);
