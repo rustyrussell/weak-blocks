@@ -334,6 +334,7 @@ static void encode_raw(struct peer *p, const struct block *b)
 	struct txinfo *t;
 
 	p->raw_blocks_sent++;
+	p->bytes_sent += BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len;
 	for (t = txmap_first(&b->txs, &it); t; t = txmap_next(&b->txs, &it)) {
 		p->txs_sent++;
 		p->bytes_sent += txsize(t);
@@ -367,6 +368,7 @@ static void encode_against_weak(struct peer *p, const struct block *b,
 	p->ref_blocks_sent++;
 	/* Assume we refer to the previous block. */
 	p->bytes_sent += sizeof(struct corpus_txid);
+	p->bytes_sent += BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len;
 
 	for (t = txmap_first(&b->txs, &it); t; t = txmap_next(&b->txs, &it)) {
 		if (find_in_block(base, &t->txid)) {
@@ -374,8 +376,9 @@ static void encode_against_weak(struct peer *p, const struct block *b,
 			p->bytes_sent += 2;
 			p->txs_referred++;
 		} else {
+			/* Assume we use a 2 byte escape sequence. */
 			p->txs_sent++;
-			p->bytes_sent += txsize(t);
+			p->bytes_sent += 2 + txsize(t);
 		}
 	}
 }
