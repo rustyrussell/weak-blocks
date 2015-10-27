@@ -1,7 +1,7 @@
 CCANDIR := ccan
 CFLAGS := -Wall -I$(CCANDIR) -g #-O3 -flto
 
-CCAN_OBJS := ccan-crypto-sha256.o ccan-err.o ccan-tal.o ccan-tal-str.o ccan-take.o ccan-list.o ccan-str.o ccan-opt-helpers.o ccan-opt.o ccan-opt-parse.o ccan-opt-usage.o ccan-read_write_all.o ccan-str-hex.o ccan-tal-grab_file.o ccan-noerr.o ccan-htable.o ccan-rbuf.o
+CCAN_OBJS := ccan-crypto-sha256.o ccan-err.o ccan-tal.o ccan-tal-str.o ccan-take.o ccan-list.o ccan-str.o ccan-opt-helpers.o ccan-opt.o ccan-opt-parse.o ccan-opt-usage.o ccan-read_write_all.o ccan-str-hex.o ccan-tal-grab_file.o ccan-noerr.o ccan-htable.o ccan-rbuf.o ccan-asort.o ccan-order.o
 
 default: weak-blocks
 
@@ -43,4 +43,8 @@ ccan-crypto-sha256.o: $(CCANDIR)/ccan/crypto/sha256/sha256.c
 ccan-htable.o: $(CCANDIR)/ccan/htable/htable.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 ccan-rbuf.o: $(CCANDIR)/ccan/rbuf/rbuf.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+ccan-asort.o: $(CCANDIR)/ccan/asort/asort.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+ccan-order.o: $(CCANDIR)/ccan/order/order.c
 	$(CC) $(CFLAGS) -c -o $@ $<
