@@ -276,8 +276,6 @@ static void generate_weak(struct weak_blocks *weak, struct peer *peer)
 		txmap_add(&b->txs, sorted[i]);
 		total += sorted[i]->len;
 	}
-	printf("Block size %u is %zu (%zu/%zu)\n", b->height, total,
-	       i, peer->mempool->txs.raw.elems);
 
 	/* Now fill it in a weak slot. */
 	for (i = 0; i < NUM_WEAK; i++) {
