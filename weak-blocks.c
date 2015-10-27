@@ -15,6 +15,12 @@ struct block {
 	struct corpus_txid *txids;
 };
 
+/* We keep weak blocks for last few blocks (sufficient here). */
+#define NUM_WEAK 3
+struct weak_blocks {
+	struct block *b[NUM_WEAK];
+};
+
 static struct block *new_block(const tal_t *ctx, struct peer *owner,
 			       size_t height)
 {
@@ -172,14 +178,30 @@ static void forward_to_block(struct peer *p, size_t blocknum)
 	errx(1, "No block number %zu for peer %s", blocknum, p->name);
 }
 
-static struct block *generate_weak(const tal_t *ctx, struct peer *peer)
+static void generate_weak(struct weak_blocks *weak, struct peer *peer)
 {
 	/* FIXME: limit by size and fee here. */
-	struct block *b = new_block(ctx, peer, peer->mempool->height);
+	size_t i, min = 0;
+	struct block *b = new_block(weak, peer, peer->mempool->height);
 
 	b->txids = tal_dup_arr(b, struct corpus_txid, peer->mempool->txids,
 			       tal_count(peer->mempool->txids), 0);
-	return b;
+
+	for (i = 0; i < NUM_WEAK; i++) {
+		if (!weak->b[i]) {
+			weak->b[i] = b;
+			return;
+		}
+		/* We only keep one of each height. */
+		if (weak->b[i]->height == b->height) {
+			weak->b[i] = b;
+			return;
+		}
+		if (weak->b[i]->height < weak->b[min]->height)
+			min = i;
+	}
+	/* Replace oldest. */
+	weak->b[min] = b;
 }
 
 static struct block *read_block_contents(struct peer *p, size_t block_height)
@@ -230,16 +252,34 @@ static void encode_raw(struct peer *p, const struct block *b)
 	}
 }
 
+static const struct block *find_weak(const struct weak_blocks *weak,
+				     unsigned int height)
+{
+	size_t i;
+
+	for (i = 0; i < NUM_WEAK; i++) {
+		if (weak->b[i] && weak->b[i]->height == height)
+			return weak->b[i];
+	}
+	return NULL;
+}
+
 static void encode_against_weak(struct peer *p, const struct block *b,
-				const struct block *weak)
+				const struct weak_blocks *weak)
 {
 	size_t i, n = tal_count(b->txids);
+	const struct block *base = find_weak(weak, b->height);
+
+	if (!base) {
+		encode_raw(p, b);
+		return;
+	}
 
 	p->ref_blocks_sent++;
 	/* Assume we refer to the previous block. */
 	p->bytes_sent += sizeof(struct corpus_txid);
 	for (i = 0; i < n; i++) {
-		if (find_in_block(weak, &b->txids[i]) >= 0) {
+		if (find_in_block(base, &b->txids[i]) >= 0) {
 			/* 16 bits to show position. */
 			p->bytes_sent += 2;
 			p->txs_referred++;
@@ -251,7 +291,7 @@ static void encode_against_weak(struct peer *p, const struct block *b,
 }
 
 static void process_events(struct peer *p, unsigned int time,
-			   const struct block *weak)
+			   const struct weak_blocks *weak)
 {
 	struct block *b;
 
@@ -269,15 +309,7 @@ static void process_events(struct peer *p, unsigned int time,
 			assert(corpus_blocknum(p->cur) == p->mempool->height);
 
 			b = read_block_contents(p, corpus_blocknum(p->cur));
-			if (weak && weak->height == b->height)
-				encode_against_weak(p, b, weak);
-			else {
-				printf("%s: can't encode %u: weak %s height %u\n",
-				       p->name, b->height,
-				       weak ? weak->owner->name : "",
-				       weak ? weak->height : 0);
-				encode_raw(p, b);
-			}
+			encode_against_weak(p, b, weak);
 			tal_free(b);
 			break;
 		case INCOMING_TX:
@@ -300,14 +332,14 @@ int main(int argc, char *argv[])
 {
 	size_t i, num_peers;
 	unsigned int time, start_time;
-	struct block *weak = NULL;
+	struct weak_blocks *weak = talz(NULL, struct weak_blocks);
 	struct peer *peers;
 
 	if (argc < 3)
 		errx(1, "Usage: %s <peer1> <peer2>...", argv[0]);
 
 	num_peers = argc - 1;
-	peers = tal_arr(NULL, struct peer, num_peers);
+	peers = tal_arr(weak, struct peer, num_peers);
 	for (i = 0; i < num_peers; i++) {
 		peers[i].name = argv[i+1];
 		peers[i].start = peers[i].cur = grab_file(peers, argv[i+1]);
@@ -333,7 +365,7 @@ int main(int argc, char *argv[])
 		 * So each second, chance for each peer is 1 in 30*num_peers */
 		for (i = 0; i < num_peers; i++) {
 			if (random() < RAND_MAX / (30 * num_peers)) {
-				weak = generate_weak(peers, &peers[i]);
+				generate_weak(weak, &peers[i]);
 				peers[i].weak_blocks_sent++;
 			}
 		}
