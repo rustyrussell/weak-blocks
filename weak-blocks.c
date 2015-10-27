@@ -13,8 +13,7 @@
 #define MIN_BLOCK 352720
 #define MAX_BLOCK 352820
 
-/* 80 bytes header, 600 bytes for coinbase */
-#define BLOCK_OVERHEAD 680
+#define BLOCKHEADER_SIZE 80
 #define BLOCKSIZE 1000000
 
 struct txinfo {
@@ -26,6 +25,7 @@ struct txinfo {
 
 /* Map of all the txs. */
 static struct txmap *all_txs;
+static struct txinfo *coinbases[MAX_BLOCK + 1 - MIN_BLOCK];
 
 /* If we don't know about tx, use approximations. */
 static struct txinfo *unknown_txinfo(const tal_t *ctx,
@@ -250,7 +250,7 @@ static int cmp_feerate(struct txinfo *const *a, struct txinfo *const *b,
 static void generate_weak(struct weak_blocks *weak, struct peer *peer)
 {
 	struct txinfo **sorted;
-	size_t i, total, min = 0;
+	size_t i, total, max, min = 0;
 	struct txmap_iter it;
 	struct txinfo *t;
 	struct block *b;
@@ -265,11 +265,13 @@ static void generate_weak(struct weak_blocks *weak, struct peer *peer)
 
 	asort(sorted, i, cmp_feerate, NULL);
 
-	total = 0;
 	b = new_block(weak, peer, peer->mempool->height);
+	max = BLOCKSIZE - BLOCKHEADER_SIZE;
+
 	/* We do first fill for blocks. */
+	total = coinbases[b->height-MIN_BLOCK]->len;
 	for (i = 0; i < peer->mempool->txs.raw.elems; i++) {
-		if (total + sorted[i]->len > BLOCKSIZE - BLOCK_OVERHEAD)
+		if (total + sorted[i]->len > max)
 			break;
 		txmap_add(&b->txs, sorted[i]);
 		total += sorted[i]->len;
@@ -441,6 +443,15 @@ static void load_txmap(const char *csvfile)
 			errx(1, "Invalid len in %s: '%s'", csvfile, parts[3]);
 		t->fee = atoi(parts[4]);
 		txmap_add(all_txs, t);
+		if (t->coinbase && !orphaned(&t->txid)) {
+			size_t blocknum = atoi(parts[0]);
+
+			if (blocknum < MIN_BLOCK || blocknum > MAX_BLOCK)
+				errx(1, "Invalid block number %zu", blocknum);
+			if (coinbases[blocknum - MIN_BLOCK])
+				errx(1, "Duplicate coinbase %zu", blocknum);
+			coinbases[blocknum - MIN_BLOCK] = t;
+		}
 	}
 }
 
