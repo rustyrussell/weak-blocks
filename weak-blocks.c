@@ -1,6 +1,7 @@
 #include <ccan/asort/asort.h>
 #include <ccan/structeq/structeq.h>
 #include <ccan/htable/htable_type.h>
+#include <ccan/opt/opt.h>
 #include <ccan/tal/tal.h>
 #include <ccan/tal/str/str.h>
 #include <ccan/tal/grab_file/grab_file.h>
@@ -462,14 +463,28 @@ int main(int argc, char *argv[])
 	unsigned int time, start_time;
 	struct weak_blocks *weak;
 	struct peer *peers;
+	unsigned int first_bonus = 1, weak_block_seconds = 30;
 
+	opt_register_arg("--first-bonus=<multiplier>",
+			 opt_set_uintval, opt_show_uintval, &first_bonus,
+			 "Difficulty adjustment for first weak block");
+	opt_register_arg("--weak-seconds=<seconds>",
+			 opt_set_uintval, opt_show_uintval, &weak_block_seconds,
+			 "How many seconds on average for a weak block");
+	opt_register_noarg("-h|--help", opt_usage_and_exit,
+			   "<txids> <peer1> <peer2>...",
+			   "Show this help message");
+	opt_parse(&argc, argv, opt_log_stderr_exit);
 	if (argc < 4)
-		errx(1, "Usage: %s <txids> <peer1> <peer2>...", argv[0]);
+		opt_usage_exit_fail("Need three arguments or more");
+	num_peers = argc - 2;
+	if (first_bonus > weak_block_seconds * num_peers)
+		opt_usage_exit_fail("First bonus can't be more than %zu",
+				    weak_block_seconds * num_peers);
 
 	load_txmap(argv[1]);
 	weak = talz(all_txs, struct weak_blocks);
 	
-	num_peers = argc - 2;
 	peers = tal_arr(weak, struct peer, num_peers);
 	for (i = 0; i < num_peers; i++) {
 		peers[i].name = argv[i+2];
@@ -495,7 +510,10 @@ int main(int argc, char *argv[])
 		/* Network generates a weak block ~ every 30 seconds.
 		 * So each second, chance for each peer is 1 in 30*num_peers */
 		for (i = 0; i < num_peers; i++) {
-			if (random() < RAND_MAX / (30 * num_peers)) {
+			long int threshold = RAND_MAX / (weak_block_seconds * num_peers);
+			if (!find_weak(weak, peers[i].mempool->height))
+				threshold *= first_bonus;
+			if (random() < threshold) {
 				generate_weak(weak, &peers[i]);
 				peers[i].weak_blocks_sent++;
 			}
