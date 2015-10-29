@@ -460,7 +460,7 @@ static void load_txmap(const char *csvfile)
 int main(int argc, char *argv[])
 {
 	size_t i, num_peers;
-	unsigned int time, start_time;
+	unsigned int time, start_time, seed = 0;
 	struct weak_blocks *weak;
 	struct peer *peers;
 	unsigned int first_bonus = 1, weak_block_seconds = 30;
@@ -471,6 +471,9 @@ int main(int argc, char *argv[])
 	opt_register_arg("--weak-seconds=<seconds>",
 			 opt_set_uintval, opt_show_uintval, &weak_block_seconds,
 			 "How many seconds on average for a weak block");
+	opt_register_arg("--seed",
+			 opt_set_uintval, NULL, &seed,
+			 "Seed for number generator");
 	opt_register_noarg("-h|--help", opt_usage_and_exit,
 			   "<txids> <peer1> <peer2>...",
 			   "Show this help message");
@@ -481,7 +484,9 @@ int main(int argc, char *argv[])
 	if (first_bonus > weak_block_seconds * num_peers)
 		opt_usage_exit_fail("First bonus can't be more than %zu",
 				    weak_block_seconds * num_peers);
-
+	if (seed)
+		srandom(seed);
+	
 	load_txmap(argv[1]);
 	weak = talz(all_txs, struct weak_blocks);
 	
