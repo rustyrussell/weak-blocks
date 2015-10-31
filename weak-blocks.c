@@ -102,7 +102,7 @@ static bool find_in_block(const struct block *block,
 	return txmap_get(&block->txs, txid) != NULL;
 }
 
-static void add_to_block(struct block *b, const struct corpus_txid *txid)
+static struct txinfo *add_to_block(struct block *b, const struct corpus_txid *txid)
 {
 	struct txinfo *txinfo;
 
@@ -112,6 +112,7 @@ static void add_to_block(struct block *b, const struct corpus_txid *txid)
 	if (!txinfo)
 		txinfo = unknown_txinfo(b, txid);
 	txmap_add(&b->txs, txinfo);
+	return txinfo;
 }
 
 static void remove_from_block(struct block *b, const struct corpus_txid *txid)
@@ -126,6 +127,7 @@ struct peer {
 	size_t weak_blocks_sent, raw_blocks_sent, ref_blocks_sent, bytes_sent;
 	size_t txs_sent;
 	size_t txs_referred;
+	size_t ideal_txs_unknown, ideal_txs_sent, ideal_bytes;
 	struct corpus_entry *start, *end, *cur;
 
 	struct block *mempool;
@@ -319,7 +321,9 @@ static struct block *read_block_contents(struct peer *p, size_t block_height)
 			break;
 		case UNKNOWN:
 			assert(!find_in_block(p->mempool, &p->cur->txid));
-			add_to_block(b, &p->cur->txid);
+			// Even best case, we'd need to send this one.
+			p->ideal_bytes += add_to_block(b, &p->cur->txid)->len;
+			p->ideal_txs_unknown++;
 			break;
 		}
 		p->cur++;
@@ -333,10 +337,12 @@ static void encode_raw(struct peer *p, const struct block *b)
 	struct txinfo *t;
 
 	p->raw_blocks_sent++;
-	p->bytes_sent += BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len;
 	for (t = txmap_first(&b->txs, &it); t; t = txmap_next(&b->txs, &it)) {
 		p->txs_sent++;
 		p->bytes_sent += txsize(t);
+		// In the ideal case, we'd still send a 2 byte ref.
+		p->ideal_bytes += 2;
+		p->ideal_txs_sent++;
 	}
 }
 
@@ -359,6 +365,9 @@ static void encode_against_weak(struct peer *p, const struct block *b,
 	struct txmap_iter it;
 	struct txinfo *t;
 
+	/* We have to send header and coinbase. */
+	p->bytes_sent += BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len;
+	p->ideal_bytes += BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len;
 	if (!base) {
 		encode_raw(p, b);
 		return;
@@ -367,7 +376,6 @@ static void encode_against_weak(struct peer *p, const struct block *b,
 	p->ref_blocks_sent++;
 	/* Assume we refer to the previous block. */
 	p->bytes_sent += sizeof(struct corpus_txid);
-	p->bytes_sent += BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len;
 
 	for (t = txmap_first(&b->txs, &it); t; t = txmap_next(&b->txs, &it)) {
 		if (find_in_block(base, &t->txid)) {
@@ -379,6 +387,9 @@ static void encode_against_weak(struct peer *p, const struct block *b,
 			p->txs_sent++;
 			p->bytes_sent += 2 + txsize(t);
 		}
+		// In the ideal case, we'd still send a 2 byte ref.
+		p->ideal_bytes += 2;
+		p->ideal_txs_sent++;
 	}
 }
 
@@ -503,6 +514,8 @@ int main(int argc, char *argv[])
 		peers[i].weak_blocks_sent = peers[i].raw_blocks_sent
 			= peers[i].ref_blocks_sent = peers[i].bytes_sent
 			= peers[i].txs_sent = peers[i].txs_referred
+			= peers[i].ideal_bytes = peers[i].ideal_txs_sent
+			= peers[i].ideal_txs_unknown
 			= 0;
 	}
 
@@ -527,16 +540,19 @@ int main(int argc, char *argv[])
 	printf("%u blocks, %u seconds\n", peers[0].mempool->height - MIN_BLOCK,
 	       time - start_time);
 	
-	printf("Name,weak-blocks-sent,raw-blocks-sent,ref-blocks-sent,bytes-sent,txs-sent,txs-referred\n");
+	printf("Name,weak-blocks-sent,raw-blocks-sent,ref-blocks-sent,bytes-sent,txs-sent,txs-referred,ideal-txs-sent,ideal-refs-sent,ideal-bytes-sent\n");
 	for (i = 0; i < num_peers; i++) {
-		printf("%s,%zu,%zu,%zu,%zu,%zu,%zu\n",
+		printf("%s,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu\n",
 		       peers[i].name,
 		       peers[i].weak_blocks_sent,
 		       peers[i].raw_blocks_sent,
 		       peers[i].ref_blocks_sent,
 		       peers[i].bytes_sent,
 		       peers[i].txs_sent,
-		       peers[i].txs_referred);
+		       peers[i].txs_referred,
+		       peers[i].ideal_txs_unknown,
+		       peers[i].ideal_txs_sent - peers[i].ideal_txs_unknown,
+		       peers[i].ideal_bytes);
 	}
 	return 0;
 }
