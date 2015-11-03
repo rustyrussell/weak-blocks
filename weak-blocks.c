@@ -27,6 +27,7 @@ struct txinfo {
 /* Map of all the txs. */
 static struct txmap *all_txs;
 static struct txinfo *coinbases[MAX_BLOCK + 1 - MIN_BLOCK];
+static bool print_ibltdata = true;
 
 /* If we don't know about tx, use approximations. */
 static struct txinfo *unknown_txinfo(const tal_t *ctx,
@@ -130,6 +131,8 @@ struct peer {
 	size_t ideal_txs_unknown, ideal_txs_sent, ideal_bytes;
 	struct corpus_entry *start, *end, *cur;
 
+	/* Ring of peers. */
+	struct peer *next;
 	struct block *mempool;
 };
 
@@ -236,6 +239,51 @@ static void forward_to_block(struct peer *p, size_t blocknum)
 		p->cur++;
 	} while (p->cur != p->end);
 	errx(1, "No block number %zu for peer %s", blocknum, p->name);
+}
+
+/* For IBLT encoding of the literal txs, we know they weren't in the
+ * weak block, so we can eliminate the weak block txs from
+ * consideration from both block and mempool. */
+static void dump_block_without_weak(const struct block *b,
+				    const struct block *weak)
+{
+	struct txmap_iter it;
+	struct txinfo *t;
+	char hexstr[hex_str_size(sizeof(t->txid))];
+
+	for (t = txmap_first(&b->txs, &it); t; t = txmap_next(&b->txs, &it)) {
+		if (weak && txmap_get(&weak->txs, &t->txid))
+			continue;
+		hex_encode(&t->txid, sizeof(t->txid), hexstr, sizeof(hexstr));
+		printf(":%s", hexstr);
+	}
+}
+
+static void dump_iblt_data(const struct peer *peer,
+			   const struct block *b,
+			   const struct block *weak)
+{
+	const struct peer *p;
+
+	/* We only dump if we're the first to find a block. */
+	for (p = peer->next; p != peer; p = p->next) {
+		if (p->mempool->height >= peer->mempool->height)
+			return;
+	}
+
+	/* height:bytes-overhead */
+	printf("%u:%zu", peer->mempool->height,
+	       BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len + sizeof(struct corpus_txid));
+	dump_block_without_weak(b, weak);
+	printf("\n");
+
+	do {
+		printf("mempool:%s", p->name);
+		dump_block_without_weak(p->mempool, weak);
+		printf("\n");
+		p = p->next;
+	} while (p != peer);
+
 }
 
 static int cmp_feerate(struct txinfo *const *a, struct txinfo *const *b,
@@ -365,6 +413,9 @@ static void encode_against_weak(struct peer *p, const struct block *b,
 	struct txmap_iter it;
 	struct txinfo *t;
 
+	if (print_ibltdata)
+		dump_iblt_data(p, b, base);
+
 	/* We have to send header and coinbase. */
 	p->bytes_sent += BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len;
 	p->ideal_bytes += BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len;
@@ -475,6 +526,8 @@ int main(int argc, char *argv[])
 	struct weak_blocks *weak;
 	struct peer *peers;
 	unsigned int first_bonus = 1, weak_block_seconds = 30;
+	bool no_generate_weak = false;
+	bool print_stats = false;
 
 	opt_register_arg("--first-bonus=<multiplier>",
 			 opt_set_uintval, opt_show_uintval, &first_bonus,
@@ -485,6 +538,10 @@ int main(int argc, char *argv[])
 	opt_register_arg("--seed",
 			 opt_set_uintval, NULL, &seed,
 			 "Seed for number generator");
+	opt_register_noarg("--stats", opt_set_bool, &print_stats,
+			   "Print statistics instead of iblt data");
+	opt_register_noarg("--no-weak", opt_set_invbool, &no_generate_weak,
+			   "Don't generate weak blocks");
 	opt_register_noarg("-h|--help", opt_usage_and_exit,
 			   "<txids> <peer1> <peer2>...",
 			   "Show this help message");
@@ -497,6 +554,12 @@ int main(int argc, char *argv[])
 				    weak_block_seconds * num_peers);
 	if (seed)
 		srandom(seed);
+
+	if (no_generate_weak)
+		first_bonus = 0;
+
+	if (print_stats)
+		print_ibltdata = false;
 	
 	load_txmap(argv[1]);
 	weak = talz(all_txs, struct weak_blocks);
@@ -517,6 +580,7 @@ int main(int argc, char *argv[])
 			= peers[i].ideal_bytes = peers[i].ideal_txs_sent
 			= peers[i].ideal_txs_unknown
 			= 0;
+		peers[i].next = &peers[(i + 1) % num_peers];
 	}
 
 	time = start_time = le32_to_cpu(peers[0].cur->timestamp);
@@ -537,6 +601,10 @@ int main(int argc, char *argv[])
 			}
 		}
 	}
+
+	if (!print_stats)
+		return 0;
+
 	printf("%u blocks, %u seconds\n", peers[0].mempool->height - MIN_BLOCK,
 	       time - start_time);
 	
