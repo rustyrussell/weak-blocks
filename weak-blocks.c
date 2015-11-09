@@ -540,7 +540,7 @@ int main(int argc, char *argv[])
 			 "Seed for number generator");
 	opt_register_noarg("--stats", opt_set_bool, &print_stats,
 			   "Print statistics instead of iblt data");
-	opt_register_noarg("--no-weak", opt_set_invbool, &no_generate_weak,
+	opt_register_noarg("--no-weak", opt_set_bool, &no_generate_weak,
 			   "Don't generate weak blocks");
 	opt_register_noarg("-h|--help", opt_usage_and_exit,
 			   "<txids> <peer1> <peer2>...",
