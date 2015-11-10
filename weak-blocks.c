@@ -361,7 +361,6 @@ static struct block *read_block_contents(struct peer *p, size_t block_height)
 			return b;
 		case KNOWN:
 			print_tx(p, "removing known", &p->cur->txid);
-			remove_from_block(p->mempool, &p->cur->txid);
 			add_to_block(b, &p->cur->txid);
 			break;
 		case MEMPOOL_ONLY:
@@ -448,6 +447,8 @@ static void process_events(struct peer *p, unsigned int time,
 			   const struct weak_blocks *weak)
 {
 	struct block *b;
+	struct txmap_iter it;
+	struct txinfo *t;
 
 	while (p->cur != p->end) {
 		/* Stop at timestamp. */
@@ -464,6 +465,9 @@ static void process_events(struct peer *p, unsigned int time,
 
 			b = read_block_contents(p, corpus_blocknum(p->cur));
 			encode_against_weak(p, b, weak);
+			// Now we've done encoding, remove all from our mempool
+			for (t = txmap_first(&b->txs, &it); t; t = txmap_next(&b->txs, &it))
+				txmap_delkey(&p->mempool->txs, &t->txid);
 			tal_free(b);
 			break;
 		case INCOMING_TX:
