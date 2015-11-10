@@ -2,7 +2,9 @@ Weak Block Simulator for Bitcoin
 ================================
 
 This is a tool which simulates nodes generating weak blocks.  It does this
-using real bitcoin block data preprocessed by [bitcoin-iterate](https://github.com/rustyrussell/bitcoin-iterate), and the corresponding mempool data from [bitcoin-corpus](https://github.com/rustyrussell/bitcoin-corpus):
+using real bitcoin block data preprocessed by [bitcoin-iterate](https://github.com/rustyrussell/bitcoin-iterate), and the corresponding mempool data from [bitcoin-corpus](https://github.com/rustyrussell/bitcoin-corpus).
+
+Interesting ranges are blocks 352720-352819 (which includes an 11-block run of mempool backlog), and the entire useful core of the corpus (352305-353009).
 
 ```bash
 # Generate transaction information for blocks 352720-352819

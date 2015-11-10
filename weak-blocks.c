@@ -11,8 +11,8 @@
 #include <assert.h>
 #include "../bitcoin-corpus/bitcoin-corpus.h"
 
-#define MIN_BLOCK 352720
-#define MAX_BLOCK 352820
+#define MIN_BLOCK 352305
+#define MAX_BLOCK 353009
 
 #define BLOCKHEADER_SIZE 80
 #define BLOCKSIZE 1000000
@@ -154,13 +154,25 @@ static bool orphaned(const struct corpus_txid *txid)
 		      0xca, 0x4d, 0x07, 0x50, 0x8e, 0x0f, 0x59, 0x6f,
 		      0x87, 0x2f, 0x66, 0xc6, 0xdb, 0x4d, 0x36, 0x67,
 		      0x13, 0x3a, 0x37, 0x17, 0x20, 0x55, 0xe9, 0x7b } };
-
-	return structeq(&orphan_352802, txid);
+	static struct corpus_txid orphan_352548
+		= { { 0xa0, 0x1b, 0x5e, 0x45, 0xd3, 0x62, 0x4b, 0xc0,
+		      0x26, 0x5f, 0xb8, 0xab, 0x81, 0xbb, 0x99, 0x6b,
+		      0xf4, 0xff, 0xd4, 0x6d, 0xdd, 0xe4, 0x5e, 0x08,
+		      0x3f, 0xc7, 0x3e, 0x33, 0x4e, 0x77, 0x6e, 0x0d } };
+	static struct corpus_txid orphan_352560
+		= { { 0x33, 0xdb, 0x97, 0x55, 0x66, 0x2f, 0x6b, 0x4a,
+		      0x46, 0xdf, 0xe2, 0x6a, 0x1d, 0x65, 0xba, 0x00,
+		      0xc4, 0xe1, 0xa2, 0xa9, 0xf1, 0xdb, 0x19, 0x0e,
+		      0x71, 0x1c, 0x61, 0xe4, 0xbc, 0xd0, 0x60, 0xd7 } };
+	return structeq(&orphan_352802, txid)
+		|| structeq(&orphan_352548, txid)
+		|| structeq(&orphan_352560, txid);
 }
 
 static bool maybe_orphan(size_t blocknum)
 {
-	return blocknum == 352802;
+	return blocknum == 352802 || blocknum == 352548 || blocknum == 352560
+		|| blocknum == 353014;
 }
 
 // Sync up mempool based on next block.
@@ -443,8 +455,8 @@ static void encode_against_weak(struct peer *p, const struct block *b,
 	}
 }
 
-static void process_events(struct peer *p, unsigned int time,
-			   const struct weak_blocks *weak)
+static bool process_events(struct peer *p, unsigned int time,
+			   const struct weak_blocks *weak, size_t last_block)
 {
 	struct block *b;
 	struct txmap_iter it;
@@ -453,7 +465,7 @@ static void process_events(struct peer *p, unsigned int time,
 	while (p->cur != p->end) {
 		/* Stop at timestamp. */
 		if (le32_to_cpu(p->cur->timestamp) >= time)
-			return;
+			return true;
 
 		switch (corpus_entry_type(p->cur)) {
 		case COINBASE:
@@ -462,6 +474,10 @@ static void process_events(struct peer *p, unsigned int time,
 				break;
 			// If this fails, we hit an orphan!
 			assert(corpus_blocknum(p->cur) == p->mempool->height);
+
+			// In case we reached the last block.
+			if (corpus_blocknum(p->cur) == last_block)
+				return false;
 
 			b = read_block_contents(p, corpus_blocknum(p->cur));
 			encode_against_weak(p, b, weak);
@@ -486,10 +502,13 @@ static void process_events(struct peer *p, unsigned int time,
 	errx(1, "%s: ran out of input", p->name);
 }
 
-static void load_txmap(const char *csvfile)
+/* Returns first block number. */
+static size_t load_txmap(const char *csvfile, size_t *last_block)
 {
 	struct rbuf in;
 	char *line;
+	size_t first_block = MAX_BLOCK+1;
+	*last_block = MIN_BLOCK-1;
 
 	all_txs = tal(NULL, struct txmap);
 	txmap_init(all_txs);
@@ -519,13 +538,18 @@ static void load_txmap(const char *csvfile)
 			if (coinbases[blocknum - MIN_BLOCK])
 				errx(1, "Duplicate coinbase %zu", blocknum);
 			coinbases[blocknum - MIN_BLOCK] = t;
+			if (blocknum < first_block)
+				first_block = blocknum;
+			if (blocknum > *last_block)
+				*last_block = blocknum;
 		}
 	}
+	return first_block;
 }
 
 int main(int argc, char *argv[])
 {
-	size_t i, num_peers;
+	size_t i, num_peers, first_block, last_block;
 	unsigned int time, start_time, seed = 0;
 	struct weak_blocks *weak;
 	struct peer *peers;
@@ -565,7 +589,7 @@ int main(int argc, char *argv[])
 	if (print_stats)
 		print_ibltdata = false;
 	
-	load_txmap(argv[1]);
+	first_block = load_txmap(argv[1], &last_block);
 	weak = talz(all_txs, struct weak_blocks);
 	
 	peers = tal_arr(weak, struct peer, num_peers);
@@ -576,8 +600,8 @@ int main(int argc, char *argv[])
 			err(1, "Grabbing %s", peers[i].name);
 		peers[i].end = peers[i].start
 			+ tal_count(peers[i].start) / sizeof(*peers[i].start);
-		peers[i].mempool = new_block(peers, &peers[i], MIN_BLOCK);
-		forward_to_block(&peers[i], MIN_BLOCK);
+		peers[i].mempool = new_block(peers, &peers[i], first_block);
+		forward_to_block(&peers[i], first_block);
 		peers[i].weak_blocks_sent = peers[i].raw_blocks_sent
 			= peers[i].ref_blocks_sent = peers[i].bytes_sent
 			= peers[i].txs_sent = peers[i].txs_referred
@@ -588,11 +612,13 @@ int main(int argc, char *argv[])
 	}
 
 	time = start_time = le32_to_cpu(peers[0].cur->timestamp);
-	while (peers[0].mempool->height < MAX_BLOCK) {
+	for (;;) {
 		time++;
 		/* Move everyone forward one second. */
-		for (i = 0; i < num_peers; i++)
-			process_events(&peers[i], time, weak);
+		for (i = 0; i < num_peers; i++) {
+			if (!process_events(&peers[i], time, weak, last_block))
+				goto out;
+		}
 		/* Network generates a weak block ~ every 30 seconds.
 		 * So each second, chance for each peer is 1 in 30*num_peers */
 		for (i = 0; i < num_peers; i++) {
@@ -606,10 +632,12 @@ int main(int argc, char *argv[])
 		}
 	}
 
+out:
 	if (!print_stats)
 		return 0;
 
-	printf("%u blocks, %u seconds\n", peers[0].mempool->height - MIN_BLOCK,
+	printf("%lu blocks, %u seconds\n",
+	       peers[0].mempool->height - first_block,
 	       time - start_time);
 	
 	printf("Name,weak-blocks-sent,raw-blocks-sent,ref-blocks-sent,bytes-sent,txs-sent,txs-referred,ideal-txs-sent,ideal-refs-sent,ideal-bytes-sent\n");
