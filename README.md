@@ -6,12 +6,12 @@ using real bitcoin block data preprocessed by [bitcoin-iterate](https://github.c
 
 Interesting ranges are blocks 352720-352819 (which includes an 11-block run of mempool backlog), and the entire useful core of the corpus (352305-353009).
 
-```bash
-# Generate transaction information for blocks 352720-352819
-bitcoin-iterate -q --start 352720 --end 352820 --tx %bN,%tN,%th,%tl,%tF > txs-352720-to-352820.csv
-# Simulate 30-second weak blocks between peers, with first weak block 16x easier
-./weak-blocks --first-bonus=16 txs-352720-to-352820.csv  ../bitcoin-corpus/au ../bitcoin-corpus/sg ../bitcoin-corpus/sf ../bitcoin-corpus/sf-rn > 30-second-weak-blocks-16-bonus.csv
-```
+You can see some prepared results in the results directory:
+
+* no-weak-full.csv.xz: blocks and mempool CSV without weak blocks (full corpus)
+* no-weak-100-blocks.csv.xz: blocks and mempool CSV without weak blocks (blocks 352720-352819 only)
+* 30-second-16-firstbonus-100-blocks.csv.xz: blocks and mempool CSV with 30 second weak blocks and 16x bonus for first weak block (full corpus)
+* 30-second-16-firstbonus-full.csv.xz: blocks and mempool CSV with 30 second weak blocks and 16x bonus for first weak block (blocks 352720-352819 only)
 
 What Are Weak Blocks
 --------------------
@@ -34,6 +34,18 @@ would be in such a scheme.
 
 For comparison, you can get non-weak-block output with --no-weak.
 
+Generating Your Own Weak Simulation
+-----------------------------------
+
+```bash
+# Generate transaction information for blocks 352720-352819
+bitcoin-iterate -q --start 352720 --end 352820 --tx %bN,%tN,%th,%tl,%tF > txs-352720-to-352820.csv
+# Simulate 30-second weak blocks between peers, with first weak block 16x easier
+./weak-blocks --first-bonus=16 txs-352720-to-352820.csv  ../bitcoin-corpus/au ../bitcoin-corpus/sg ../bitcoin-corpus/sf ../bitcoin-corpus/sf-rn > 30-second-weak-blocks-16-bonus.csv
+```
+
+Output Format
+-------------
 The CSV output is designed for post-analysis, the format is as follows:
 
 ```
