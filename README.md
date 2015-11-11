@@ -34,18 +34,18 @@ would be in such a scheme.
 
 For comparison, you can get non-weak-block output with --no-weak.
 
-The output is designed for post-analysis, the format is as follows:
+The CSV output is designed for post-analysis, the format is as follows:
 
 ```
 <FILE> := <BLOCKDESC>*
 For each block, in incrementing order:
 <BLOCKDESC> := <BLOCK-LINE><MEMPOOL-LINE>+
-<BLOCK-LINE> := <BLOCKHEIGHT>:<OVERHEAD-BYTES>:<TXID>*
+<BLOCK-LINE> := block,<BLOCKHEIGHT>,<OVERHEAD-BYTES>[,<TXID>]*
 <BLOCKHEIGHT> := integer
 <OVERHEAD-BYTES> := integer
 <TXID> := hex // TXID
 For each peer, after each <BLOCK-LINE>:
-<MEMPOOL-LINE> := mempool:<PEERNAME>:<TXID>*
+<MEMPOOL-LINE> := mempool,<PEERNAME>[,<TXID>]*
 ```
 
 Transactions which were in previous weak blocks are eliminated from

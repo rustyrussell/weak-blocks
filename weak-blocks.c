@@ -267,7 +267,7 @@ static void dump_block_without_weak(const struct block *b,
 		if (weak && txmap_get(&weak->txs, &t->txid))
 			continue;
 		hex_encode(&t->txid, sizeof(t->txid), hexstr, sizeof(hexstr));
-		printf(":%s", hexstr);
+		printf(",%s", hexstr);
 	}
 }
 
@@ -283,14 +283,14 @@ static void dump_iblt_data(const struct peer *peer,
 			return;
 	}
 
-	/* height:bytes-overhead */
-	printf("%u:%zu", peer->mempool->height,
+	/* height,bytes-overhead */
+	printf("block,%u,%zu", peer->mempool->height,
 	       BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len + sizeof(struct corpus_txid));
 	dump_block_without_weak(b, weak);
 	printf("\n");
 
 	do {
-		printf("mempool:%s", p->name);
+		printf("mempool,%s", p->name);
 		dump_block_without_weak(p->mempool, weak);
 		printf("\n");
 		p = p->next;
