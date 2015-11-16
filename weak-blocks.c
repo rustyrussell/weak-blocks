@@ -146,42 +146,6 @@ static void print_tx(struct peer *p,
 #endif
 }
 
-// We identify orphaned blocks by coinbase.
-static bool orphaned(const struct corpus_txid *txid)
-{
-	static struct corpus_txid orphan_352802
-		= { { 0x79, 0xb1, 0xc3, 0x09, 0xab, 0x8a, 0xb9, 0x2b,
-		      0xca, 0x4d, 0x07, 0x50, 0x8e, 0x0f, 0x59, 0x6f,
-		      0x87, 0x2f, 0x66, 0xc6, 0xdb, 0x4d, 0x36, 0x67,
-		      0x13, 0x3a, 0x37, 0x17, 0x20, 0x55, 0xe9, 0x7b } };
-	static struct corpus_txid orphan_352548
-		= { { 0xa0, 0x1b, 0x5e, 0x45, 0xd3, 0x62, 0x4b, 0xc0,
-		      0x26, 0x5f, 0xb8, 0xab, 0x81, 0xbb, 0x99, 0x6b,
-		      0xf4, 0xff, 0xd4, 0x6d, 0xdd, 0xe4, 0x5e, 0x08,
-		      0x3f, 0xc7, 0x3e, 0x33, 0x4e, 0x77, 0x6e, 0x0d } };
-	static struct corpus_txid orphan_352560
-		= { { 0x33, 0xdb, 0x97, 0x55, 0x66, 0x2f, 0x6b, 0x4a,
-		      0x46, 0xdf, 0xe2, 0x6a, 0x1d, 0x65, 0xba, 0x00,
-		      0xc4, 0xe1, 0xa2, 0xa9, 0xf1, 0xdb, 0x19, 0x0e,
-		      0x71, 0x1c, 0x61, 0xe4, 0xbc, 0xd0, 0x60, 0xd7 } };
-	static struct corpus_txid orphan_353014
-		= { { 0x83, 0x01, 0x78, 0xaa, 0x3b, 0x5b, 0xff, 0xfa,
-		      0x0d, 0x8e, 0x2d, 0xc3, 0x9d, 0xef, 0x5d, 0x3e,
-		      0x99, 0x02, 0x9c, 0xa5, 0x0a, 0xaf, 0xc5, 0xc1,
-		      0x72, 0xe4, 0x55, 0x6f, 0x9a, 0xc4, 0x6d, 0x1e } };
-
-	return structeq(&orphan_352802, txid)
-		|| structeq(&orphan_352548, txid)
-		|| structeq(&orphan_352560, txid)
-		|| structeq(&orphan_353014, txid);
-}
-
-static bool maybe_orphan(size_t blocknum)
-{
-	return blocknum == 352802 || blocknum == 352548 || blocknum == 352560
-		|| blocknum == 353014;
-}
-
 /*
  * sf-rn and au "forget" about these transactions, received after the
  * 353014 orphan block.  My guess is that these transactions depend on
@@ -245,7 +209,8 @@ static void next_block(struct peer *p, size_t blocknum)
 		switch (corpus_entry_type(p->cur)) {
 		case COINBASE:
 			// If it's orphaned, ignore it.
-			if (orphaned(&p->cur->txid))
+			if (corpus_orphaned_coinbase(corpus_blocknum(p->cur),
+						     &p->cur->txid))
 				break;
 			// If this fails, we hit an orphan!
 			assert(corpus_blocknum(p->cur) == blocknum);
@@ -278,7 +243,7 @@ static void forward_to_block(struct peer *p, size_t blocknum)
 	bool prev_block = false;
 
 	// Corner case: previous blocknum is orphan.  Re-use next_block logic().
-	if (maybe_orphan(blocknum - 1)) {
+	if (corpus_maybe_orphan(blocknum - 1)) {
 		forward_to_block(p, blocknum - 2);
 		next_block(p, blocknum-1);
 		next_block(p, blocknum);
@@ -289,7 +254,8 @@ static void forward_to_block(struct peer *p, size_t blocknum)
 		switch (corpus_entry_type(p->cur)) {
 		case COINBASE:
 			// If it's orphaned, ignore it.
-			if (orphaned(&p->cur->txid)) {
+			if (corpus_orphaned_coinbase(corpus_blocknum(p->cur),
+						     &p->cur->txid)) {
 				break;
 			}
 			if (corpus_blocknum(p->cur) == blocknum) {
@@ -563,7 +529,8 @@ static bool process_events(struct peer *p, unsigned int time,
 		switch (corpus_entry_type(p->cur)) {
 		case COINBASE:
 			// If it's orphaned, ignore it.
-			if (orphaned(&p->cur->txid)) {
+			if (corpus_orphaned_coinbase(corpus_blocknum(p->cur),
+						     &p->cur->txid)) {
 				skip_block(p);
 				continue;
 			}
@@ -610,6 +577,7 @@ static size_t load_txmap(const char *csvfile, size_t *last_block)
 
 	/* 352720,0,433a604e24c948f3eaa2af815c168b65c3f4c3e746c7b4129779cbe9a45c5d0a,102,-2516496498 */
 	while ((line = rbuf_read_str(&in, '\n', realloc)) != NULL) {
+		size_t blocknum;
 		struct txinfo *t = tal(all_txs, struct txinfo);
 		char **parts = tal_strsplit(NULL, line, ",", STR_EMPTY_OK);
 		if (tal_count(parts) != 6)
@@ -623,9 +591,8 @@ static size_t load_txmap(const char *csvfile, size_t *last_block)
 			errx(1, "Invalid len in %s: '%s'", csvfile, parts[3]);
 		t->fee = atoi(parts[4]);
 		txmap_add(all_txs, t);
-		if (t->coinbase && !orphaned(&t->txid)) {
-			size_t blocknum = atoi(parts[0]);
-
+		blocknum = atoi(parts[0]);
+		if (t->coinbase && !corpus_orphaned_coinbase(blocknum, &t->txid)) {
 			if (blocknum < MIN_BLOCK || blocknum > MAX_BLOCK)
 				errx(1, "Invalid block number %zu", blocknum);
 			if (coinbases[blocknum - MIN_BLOCK])
