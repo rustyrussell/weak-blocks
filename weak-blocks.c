@@ -336,15 +336,19 @@ static void dump_block_without_weak(const struct block *b,
 
 static void dump_iblt_data(const struct peer *peer,
 			   const struct block *b,
-			   const struct block *weak)
+			   const struct block *weak,
+			   bool is_weak)
 {
 	const struct peer *p;
 
-	/* We only dump if we're the first to find a block. */
-	for (p = peer->next; p != peer; p = p->next) {
-		if (p->mempool->height >= peer->mempool->height)
-			return;
-	}
+	if (!weak) {
+		/* We only dump if we're the first to find a block. */
+		for (p = peer->next; p != peer; p = p->next) {
+			if (p->mempool->height >= peer->mempool->height)
+				return;
+		}
+	} else
+		p = peer;
 
 	/* height,bytes-overhead 
 	 *
@@ -376,7 +380,7 @@ static int cmp_feerate(struct txinfo *const *a, struct txinfo *const *b,
 	return 0;
 }
 
-static void generate_weak(struct weak_blocks *weak, struct peer *peer)
+static struct block *generate_weak(struct weak_blocks *weak, struct peer *peer)
 {
 	struct txinfo **sorted;
 	size_t i, total, max, min = 0;
@@ -410,18 +414,19 @@ static void generate_weak(struct weak_blocks *weak, struct peer *peer)
 	for (i = 0; i < NUM_WEAK; i++) {
 		if (!weak->b[i]) {
 			weak->b[i] = b;
-			return;
+			return b;
 		}
 		/* We only keep one of each height. */
 		if (weak->b[i]->height == b->height) {
 			weak->b[i] = b;
-			return;
+			return b;
 		}
 		if (weak->b[i]->height < weak->b[min]->height)
 			min = i;
 	}
 	/* Replace oldest. */
 	weak->b[min] = b;
+	return b;
 }
 
 static struct block *read_block_contents(struct peer *p, size_t block_height)
@@ -484,14 +489,14 @@ static const struct block *find_weak(const struct weak_blocks *weak,
 }
 
 static void encode_against_weak(struct peer *p, const struct block *b,
-				const struct weak_blocks *weak)
+				const struct weak_blocks *weak, bool is_weak)
 {
 	const struct block *base = find_weak(weak, b->height);
 	struct txmap_iter it;
 	struct txinfo *t;
 
 	if (print_ibltdata)
-		dump_iblt_data(p, b, base);
+		dump_iblt_data(p, b, base, is_weak);
 
 	/* We have to send header and coinbase. */
 	p->bytes_sent += BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len;
@@ -571,7 +576,7 @@ static bool process_events(struct peer *p, unsigned int time,
 				return false;
 
 			b = read_block_contents(p, corpus_blocknum(p->cur));
-			encode_against_weak(p, b, weak);
+			encode_against_weak(p, b, weak, false);
 			// Now we've done encoding, remove all from our mempool
 			for (t = txmap_first(&b->txs, &it); t; t = txmap_next(&b->txs, &it))
 				txmap_delkey(&p->mempool->txs, &t->txid);
@@ -644,6 +649,7 @@ int main(int argc, char *argv[])
 	unsigned int first_bonus = 1, weak_block_seconds = 30;
 	bool no_generate_weak = false;
 	bool print_stats = false;
+	bool include_weak = false;
 
 	opt_register_arg("--first-bonus=<multiplier>",
 			 opt_set_uintval, opt_show_uintval, &first_bonus,
@@ -656,6 +662,8 @@ int main(int argc, char *argv[])
 			 "Seed for number generator");
 	opt_register_noarg("--stats", opt_set_bool, &print_stats,
 			   "Print statistics instead of iblt data");
+	opt_register_noarg("--include-weak", opt_set_bool, &include_weak,
+			   "Generate results for weak as well as strong blocks");
 	opt_register_noarg("--no-weak", opt_set_bool, &no_generate_weak,
 			   "Don't generate weak blocks");
 	opt_register_noarg("-h|--help", opt_usage_and_exit,
@@ -714,7 +722,11 @@ int main(int argc, char *argv[])
 			if (!find_weak(weak, peers[i].mempool->height))
 				threshold *= first_bonus;
 			if (random() < threshold) {
-				generate_weak(weak, &peers[i]);
+				struct block *wb;
+				wb = generate_weak(weak, &peers[i]);
+				if (include_weak)
+					encode_against_weak(&peers[i], wb,
+							    weak, true);
 				peers[i].weak_blocks_sent++;
 			}
 		}
