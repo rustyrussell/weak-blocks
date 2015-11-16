@@ -521,6 +521,28 @@ static void encode_against_weak(struct peer *p, const struct block *b,
 	}
 }
 
+static void skip_block(struct peer *p)
+{
+	p->cur++;
+	while (p->cur != p->end) {
+		switch (corpus_entry_type(p->cur)) {
+		case COINBASE:
+		case INCOMING_TX:
+			return;
+		case KNOWN:
+			/* Interestingly, txs don't seem to get returned to
+			 * mempool even when we orphan block, eg sf txid
+			 * e79b52d35ae3a41d5d9b5e64dee811531918f92955fde5699f8e3944d7831df */
+			remove_from_block(p->mempool, &p->cur->txid);
+			break;
+		case MEMPOOL_ONLY:
+		case UNKNOWN:
+			break;
+		}
+		p->cur++;
+	}
+}
+
 static bool process_events(struct peer *p, unsigned int time,
 			   const struct weak_blocks *weak, size_t last_block)
 {
@@ -536,8 +558,10 @@ static bool process_events(struct peer *p, unsigned int time,
 		switch (corpus_entry_type(p->cur)) {
 		case COINBASE:
 			// If it's orphaned, ignore it.
-			if (orphaned(&p->cur->txid))
-				break;
+			if (orphaned(&p->cur->txid)) {
+				skip_block(p);
+				continue;
+			}
 			// If this fails, we hit an orphan!
 			assert(corpus_blocknum(p->cur) == p->mempool->height);
 			forget_conflicts(p, corpus_blocknum(p->cur));
@@ -557,12 +581,9 @@ static bool process_events(struct peer *p, unsigned int time,
 			print_tx(p, "adding incoming", &p->cur->txid);
 			add_to_block(p->mempool, &p->cur->txid);
 			break;
-		/* Can happen if we're skipping an orphan! */
-		case KNOWN:
-			remove_from_block(p->mempool, &p->cur->txid);
-			break;
 		default:
-			break;
+			errx(1, "%s: unexpected type %u",
+			     p->name, corpus_entry_type(p->cur));
 		}
 		p->cur++;
 	}
