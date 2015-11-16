@@ -12,6 +12,7 @@ You can see some prepared results in the results directory:
 * no-weak-100-blocks.csv.xz: blocks and mempool CSV without weak blocks (blocks 352720-352819 only)
 * 30-second-16-firstbonus-100-blocks.csv.xz: blocks and mempool CSV with 30 second weak blocks and 16x bonus for first weak block (full corpus)
 * 30-second-16-firstbonus-full.csv.xz: blocks and mempool CSV with 30 second weak blocks and 16x bonus for first weak block (blocks 352720-352819 only)
+* 30-second-16-firstbonus-with-weak-full.csv.xz: blocks and weak blocks and mempool CSV with 30 second weak blocks and 16x bonus for first weak block
 
 What Are Weak Blocks
 --------------------
@@ -71,10 +72,11 @@ The simulator assumes each peer knows about the weak blocks instantly,
 thus there is no problem with referring to a weak block they haven't
 seen yet.
 
-It assumes a simple 16-bit encoding to calculate the overhead bytes.
+By default (without --include-weak) it only outputs the strong blocks,
+not the weak ones.  This is because latency of the strong blocks is
+what matters (unless you're worried about total bandwidth use).
 
-The block range is currently hard coded to cover the point in
-bitcoin-corpus where blocks filled.
+It assumes a simple 16-bit encoding to calculate the overhead bytes.
 
 Parameters to the Simulator
 ---------------------------
