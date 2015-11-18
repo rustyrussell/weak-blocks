@@ -319,7 +319,7 @@ static void dump_iblt_data(const struct peer *peer,
 	/* height,bytes-overhead 
 	 *
 	 * We assume 2 bytes per tx (either a reference, or an escape). */
-	printf("block,%u,%zu", peer->mempool->height,
+	printf("block,%u,%zu", b->height,
 	       BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len + sizeof(struct corpus_txid)
 	       + sizeof(u16) * peer->mempool->txs.raw.elems);
 	dump_block_without_weak(b, weak);
