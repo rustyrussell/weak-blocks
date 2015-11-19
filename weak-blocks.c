@@ -1,3 +1,4 @@
+/* FIXME: This code is very messy, including multuple traversal variants. */
 #include <ccan/asort/asort.h>
 #include <ccan/structeq/structeq.h>
 #include <ccan/htable/htable_type.h>
@@ -124,7 +125,6 @@ static void remove_from_block(struct block *b, const struct corpus_txid *txid)
 
 struct peer {
 	const char *name;
-	/* FIXME: bytes_sent doesn't include weak blocks! */
 	size_t weak_blocks_sent, raw_blocks_sent, ref_blocks_sent, bytes_sent;
 	size_t txs_sent;
 	size_t txs_referred;
@@ -300,12 +300,102 @@ static void dump_block_without_weak(const struct block *b,
 	}
 }
 
-static void dump_iblt_data(const struct peer *peer,
+static struct block *read_block_contents(struct peer *p, size_t block_height)
+{
+	struct block *b = new_block(NULL, p, block_height);
+
+	p->cur++;
+	while (p->cur != p->end) {
+		switch (corpus_entry_type(p->cur)) {
+		case COINBASE:
+		case INCOMING_TX:
+			p->mempool->height++;
+			return b;
+		case KNOWN:
+			print_tx(p, "removing known", &p->cur->txid);
+			add_to_block(b, &p->cur->txid);
+			break;
+		case MEMPOOL_ONLY:
+			assert(find_in_block(p->mempool, &p->cur->txid));
+			break;
+		case UNKNOWN:
+			assert(!find_in_block(p->mempool, &p->cur->txid));
+			// Even best case, we'd need to send this one.
+			p->ideal_bytes += add_to_block(b, &p->cur->txid)->len;
+			p->ideal_txs_unknown++;
+			break;
+		}
+		p->cur++;
+	}
+	errx(1, "%s: ran out of input", p->name);
+}
+
+static void skip_block(struct peer *p)
+{
+	p->cur++;
+	while (p->cur != p->end) {
+		switch (corpus_entry_type(p->cur)) {
+		case COINBASE:
+		case INCOMING_TX:
+			return;
+		case KNOWN:
+			/* Interestingly, txs don't seem to get returned to
+			 * mempool even when we orphan block, eg sf txid
+			 * e79b52d35ae3a41d5d9b5e64dee811531918f92955fde5699f8e3944d7831df */
+			remove_from_block(p->mempool, &p->cur->txid);
+			break;
+		case MEMPOOL_ONLY:
+		case UNKNOWN:
+			break;
+		}
+		p->cur++;
+	}
+}
+
+static void catchup_mempool(struct peer *p, unsigned int height)
+{
+	struct block *b;
+	struct txmap_iter it;
+	struct txinfo *t;
+
+	while (p->cur != p->end) {
+		switch (corpus_entry_type(p->cur)) {
+		case COINBASE:
+			// If it's orphaned, ignore it.
+			if (corpus_orphaned_coinbase(corpus_blocknum(p->cur),
+						     &p->cur->txid)) {
+				skip_block(p);
+				continue;
+			}
+			// If this fails, we hit an orphan!
+			assert(corpus_blocknum(p->cur) == p->mempool->height);
+			forget_conflicts(p, corpus_blocknum(p->cur));
+
+			b = read_block_contents(p, corpus_blocknum(p->cur));
+			// Now we've done encoding, remove all from our mempool
+			for (t = txmap_first(&b->txs, &it); t; t = txmap_next(&b->txs, &it))
+				txmap_delkey(&p->mempool->txs, &t->txid);
+			tal_free(b);
+			if (p->mempool->height == height)
+				return;
+			break;
+		case INCOMING_TX:
+			print_tx(p, "adding incoming", &p->cur->txid);
+			add_to_block(p->mempool, &p->cur->txid);
+			break;
+		default:
+			errx(1, "Unexpected entry");
+		}
+		p->cur++;
+	}
+}
+
+static void dump_iblt_data(struct peer *peer,
 			   const struct block *b,
 			   const struct block *weak,
 			   bool is_weak)
 {
-	const struct peer *p;
+	struct peer *p;
 
 	if (!weak) {
 		/* We only dump if we're the first to find a block. */
@@ -326,6 +416,14 @@ static void dump_iblt_data(const struct peer *peer,
 	printf("\n");
 
 	do {
+		/*
+		 * Corner case: other peer hasn't even seen *previous* block.
+		 * We fast-forward for this case (peer will always process
+		 * blocks in order anyway).
+		 */
+		if (p->mempool->height + 1 < peer->mempool->height)
+			catchup_mempool(p, peer->mempool->height - 1);
+
 		printf("mempool,%s", p->name);
 		dump_block_without_weak(p->mempool, weak);
 		printf("\n");
@@ -395,38 +493,6 @@ static struct block *generate_weak(struct weak_blocks *weak, struct peer *peer)
 	return b;
 }
 
-static struct block *read_block_contents(struct peer *p, size_t block_height)
-{
-	struct block *b = new_block(NULL, p, block_height);
-
-	p->cur++;
-	while (p->cur != p->end) {
-		switch (corpus_entry_type(p->cur)) {
-		case COINBASE:
-		case INCOMING_TX:
-			p->mempool->height++;
-			/* Caller increments, so decrement here! */
-			p->cur--;
-			return b;
-		case KNOWN:
-			print_tx(p, "removing known", &p->cur->txid);
-			add_to_block(b, &p->cur->txid);
-			break;
-		case MEMPOOL_ONLY:
-			assert(find_in_block(p->mempool, &p->cur->txid));
-			break;
-		case UNKNOWN:
-			assert(!find_in_block(p->mempool, &p->cur->txid));
-			// Even best case, we'd need to send this one.
-			p->ideal_bytes += add_to_block(b, &p->cur->txid)->len;
-			p->ideal_txs_unknown++;
-			break;
-		}
-		p->cur++;
-	}
-	errx(1, "%s: ran out of input", p->name);
-}
-
 static void encode_raw(struct peer *p, const struct block *b)
 {
 	struct txmap_iter it;
@@ -492,28 +558,6 @@ static void encode_against_weak(struct peer *p, const struct block *b,
 	}
 }
 
-static void skip_block(struct peer *p)
-{
-	p->cur++;
-	while (p->cur != p->end) {
-		switch (corpus_entry_type(p->cur)) {
-		case COINBASE:
-		case INCOMING_TX:
-			return;
-		case KNOWN:
-			/* Interestingly, txs don't seem to get returned to
-			 * mempool even when we orphan block, eg sf txid
-			 * e79b52d35ae3a41d5d9b5e64dee811531918f92955fde5699f8e3944d7831df */
-			remove_from_block(p->mempool, &p->cur->txid);
-			break;
-		case MEMPOOL_ONLY:
-		case UNKNOWN:
-			break;
-		}
-		p->cur++;
-	}
-}
-
 static bool process_events(struct peer *p, unsigned int time,
 			   const struct weak_blocks *weak, size_t last_block)
 {
@@ -548,7 +592,8 @@ static bool process_events(struct peer *p, unsigned int time,
 			for (t = txmap_first(&b->txs, &it); t; t = txmap_next(&b->txs, &it))
 				txmap_delkey(&p->mempool->txs, &t->txid);
 			tal_free(b);
-			break;
+			// Skip p->cur increment
+			continue;
 		case INCOMING_TX:
 			print_tx(p, "adding incoming", &p->cur->txid);
 			add_to_block(p->mempool, &p->cur->txid);
