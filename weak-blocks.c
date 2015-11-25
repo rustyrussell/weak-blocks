@@ -397,7 +397,7 @@ static void dump_iblt_data(struct peer *peer,
 {
 	struct peer *p;
 
-	if (!weak) {
+	if (!is_weak) {
 		/* We only dump if we're the first to find a block. */
 		for (p = peer->next; p != peer; p = p->next) {
 			if (p->mempool->height >= peer->mempool->height)
