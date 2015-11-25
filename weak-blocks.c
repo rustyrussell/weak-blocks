@@ -447,7 +447,7 @@ static int cmp_feerate(struct txinfo *const *a, struct txinfo *const *b,
 static struct block *generate_weak(struct weak_blocks *weak, struct peer *peer)
 {
 	struct txinfo **sorted;
-	size_t i, total, max, min = 0;
+	size_t i, max, total;
 	struct txmap_iter it;
 	struct txinfo *t;
 	struct block *b;
@@ -473,24 +473,29 @@ static struct block *generate_weak(struct weak_blocks *weak, struct peer *peer)
 		txmap_add(&b->txs, sorted[i]);
 		total += sorted[i]->len;
 	}
+	return b;
+}
+
+static void record_weak(struct weak_blocks *weak, struct block *b)
+{
+	size_t i, min = 0;
 
 	/* Now fill it in a weak slot. */
 	for (i = 0; i < NUM_WEAK; i++) {
 		if (!weak->b[i]) {
 			weak->b[i] = b;
-			return b;
+			return;
 		}
 		/* We only keep one of each height. */
 		if (weak->b[i]->height == b->height) {
 			weak->b[i] = b;
-			return b;
+			return;
 		}
 		if (weak->b[i]->height < weak->b[min]->height)
 			min = i;
 	}
 	/* Replace oldest. */
 	weak->b[min] = b;
-	return b;
 }
 
 static void encode_raw(struct peer *p, const struct block *b)
@@ -739,6 +744,7 @@ int main(int argc, char *argv[])
 				if (include_weak)
 					encode_against_weak(&peers[i], wb,
 							    weak, true);
+				record_weak(weak, wb);
 				peers[i].weak_blocks_sent++;
 			}
 		}
