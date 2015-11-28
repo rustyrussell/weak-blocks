@@ -409,9 +409,15 @@ static void dump_iblt_data(struct peer *peer,
 	/* height,bytes-overhead 
 	 *
 	 * We assume 2 bytes per tx (either a reference, or an escape). */
-	printf("block,%u,%zu", b->height,
-	       BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len + sizeof(struct corpus_txid)
-	       + sizeof(u16) * peer->mempool->txs.raw.elems);
+	if (weak) {
+		printf("block,%u,%zu", b->height,
+		       BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len + sizeof(struct corpus_txid)
+		       + sizeof(u16) * peer->mempool->txs.raw.elems);
+	} else {
+		/* Normal block. */
+		printf("block,%u,%u", b->height,
+		       BLOCKHEADER_SIZE + coinbases[b->height-MIN_BLOCK]->len);
+	}
 	dump_block_without_weak(b, weak);
 	printf("\n");
 
